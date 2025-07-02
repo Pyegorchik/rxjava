@@ -15,8 +15,8 @@ public interface Observer<T> {
      */
     void onComplete();
     
-    // /**
-    //  * Предоставляет Disposable для управления подпиской.
-    //  */
-    // void onSubscribe(Disposable d);
+    /**
+     * Предоставляет Disposable для управления подпиской.
+     */
+    void onSubscribe(Disposable d);
 }

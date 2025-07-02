@@ -1,7 +1,10 @@
 
+import java.util.List;
 import java.util.Queue;
 import java.util.concurrent.ConcurrentLinkedQueue;
+import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
 
 /**
@@ -27,13 +30,31 @@ public class Observable<T> {
      * Подписывает Observer на получение данных от Observable.
      */
     public Disposable subscribe(Observer<T> observer) {
-        AtomicBoolean disposed = new AtomicBoolean(false);
         SafeEmitter<T> safeEmitter = new SafeEmitter<>(observer);
+        
+        // Создаем Disposable для управления подпиской
+        Disposable disposable = new Disposable() {
+            @Override
+            public void dispose() {
+                safeEmitter.disposeResources();
+            }
+            
+            @Override
+            public boolean isDisposed() {
+                return safeEmitter.isDisposed();
+            }
+        };
+        
+        // Устанавливаем Disposable в эмиттер
+        safeEmitter.setDisposable(disposable);
+        
         try {
             source.subscribe(safeEmitter);
         } catch (Throwable t) {
             safeEmitter.onError(t);
         }
+        
+        return disposable;
     }
 
     /**
@@ -41,10 +62,10 @@ public class Observable<T> {
      */
     public <R> Observable<R> map(Function<? super T, ? extends R> mapper) {
         return new Observable<>(emitter -> this.subscribe(new Observer<T>() {
-            // @Override
-            // public void onSubscribe(Disposable d) {
-            //     observer.onSubscribe(d);
-            // }
+            @Override
+            public void onSubscribe(Disposable d) {
+                emitter.setDisposable(d);
+            }
 
             @Override
             public void onNext(T t) {
@@ -73,10 +94,10 @@ public class Observable<T> {
      */
     public Observable<T> filter(Predicate<? super T> predicate) {
         return new Observable<>(emitter -> subscribe(new Observer<T>() {
-            // @Override
-            // public void onSubscribe(Disposable d) {
-            //     observer.onSubscribe(d);
-            // }
+            @Override
+            public void onSubscribe(Disposable d) {
+                emitter.setDisposable(d);
+            }
 
             @Override
             public void onNext(T t) {
@@ -101,67 +122,117 @@ public class Observable<T> {
         }));
     }
 
-    // /**
-    //  * Оператор, который преобразует каждый элемент в Observable, а затем "сглаживает"
-    //  * эти Observable в единый поток.
-    //  */
-    // public <R> Observable<R> flatMap(Function<T, ? extends Observable<R>> mapper) {
-    //     return create(downstreamObserver -> subscribe(new Observer<T>() {
-    //         private Disposable upstreamDisposable;
-    //         private final AtomicReference<Disposable> innerDisposable = new AtomicReference<>();
-    //         private volatile boolean done;
-
-    //         @Override
-    //         public void onSubscribe(Disposable d) {
-    //             this.upstreamDisposable = d;
-    //             downstreamObserver.onSubscribe(d);
-    //         }
-
-    //         @Override
-    //         public void onNext(T t) {
-    //             try {
-    //                 Observable<? extends R> innerObservable = mapper.apply(t);
-    //                 innerObservable.subscribe(new Observer<R>() {
-    //                     @Override
-    //                     public void onSubscribe(Disposable d) {
-    //                        // Можно управлять внутренними подписками
-    //                        innerDisposable.set(d);
-    //                     }
-
-    //                     @Override
-    //                     public void onNext(R r) {
-    //                         downstreamObserver.onNext(r);
-    //                     }
-
-    //                     @Override
-    //                     public void onError(Throwable e) {
-    //                         downstreamObserver.onError(e);
-    //                     }
-
-    //                     @Override
-    //                     public void onComplete() {
-    //                        // Внутренний поток завершился
-    //                     }
-    //                 });
-    //             } catch (Exception e) {
-    //                 downstreamObserver.onError(e);
-    //             }
-    //         }
-
-    //         @Override
-    //         public void onError(Throwable e) {
-    //             downstreamObserver.onError(e);
-    //         }
-
-    //         @Override
-    //         public void onComplete() {
-    //             done = true;
-    //             // Завершаем основной поток только когда все внутренние потоки завершены
-    //             // Для простоты, здесь мы завершаем сразу.
-    //             downstreamObserver.onComplete();
-    //         }
-    //     }));
-    // }
+    /**
+     * Оператор, который преобразует каждый элемент в Observable, а затем "сглаживает"
+     * эти Observable в единый поток.
+     */
+    public <R> Observable<R> flatMap(Function<? super T, ? extends Observable<? extends R>> mapper) {
+        return new Observable<>(emitter -> {
+            CompositeDisposable composite = new CompositeDisposable();
+            
+            // Устанавливаем составной Disposable для эмиттера
+            emitter.setDisposable(composite);
+            
+            AtomicInteger wip = new AtomicInteger(1);
+            AtomicBoolean done = new AtomicBoolean();
+            AtomicReference<Throwable> error = new AtomicReference<>();
+            
+            Disposable mainDisposable = this.subscribe(
+                new Observer<T>() {
+                    @Override
+                    public void onSubscribe(Disposable d) {
+                        composite.add(d);
+                    }
+                    
+                    @Override
+                    public void onNext(T item) {
+                        if (composite.isDisposed()) return;
+                        
+                        try {
+                            Observable<? extends R> innerObservable = mapper.apply(item);
+                            wip.getAndIncrement();
+                            
+                            Disposable innerDisposable = innerObservable.subscribe(
+                                new Observer<R>() {
+                                    @Override
+                                    public void onSubscribe(Disposable d) {
+                                        composite.add(d);
+                                    }
+                                    
+                                    @Override
+                                    public void onNext(R r) {
+                                        if (!composite.isDisposed()) {
+                                            emitter.onNext(r);
+                                        }
+                                    }
+                                    
+                                    @Override
+                                    public void onError(Throwable t) {
+                                        onInnerError(t);
+                                    }
+                                    
+                                    @Override
+                                    public void onComplete() {
+                                        if (wip.decrementAndGet() == 0) {
+                                            checkTermination();
+                                        }
+                                    }
+                                    
+                                    private void onInnerError(Throwable t) {
+                                        if (error.compareAndSet(null, t)) {
+                                            composite.dispose();
+                                            emitter.onError(t);
+                                        }
+                                    }
+                                }
+                            );
+                        } catch (Throwable t) {
+                            if (!composite.isDisposed()) {
+                                onError(t);
+                            }
+                        }
+                    }
+                    
+                    @Override
+                    public void onError(Throwable t) {
+                        if (error.compareAndSet(null, t)) {
+                            composite.dispose();
+                            emitter.onError(t);
+                        }
+                    }
+                    
+                    @Override
+                    public void onComplete() {
+                        done.set(true);
+                        if (wip.decrementAndGet() == 0) {
+                            checkTermination();
+                        }
+                    }
+                    
+                    private void checkTermination() {
+                        if (done.get() && wip.get() == 0) {
+                            Throwable ex = error.get();
+                            if (ex != null) {
+                                emitter.onError(ex);
+                            } else {
+                                emitter.onComplete();
+                            }
+                        }
+                    }
+                }
+            );
+            
+            composite.add(mainDisposable);
+        });
+    }
+    
+    private void checkTermination(Emitter<?> emitter, Throwable error) {
+        if (error != null) {
+            emitter.onError(error);
+        } else {
+            emitter.onComplete();
+        }
+    }
 
 
     public Observable<T> subscribeOn(Scheduler scheduler) {
@@ -170,7 +241,8 @@ public class Observable<T> {
                 this.subscribe(new Observer<T>() {
                     @Override public void onNext(T item) { emitter.onNext(item); }
                     @Override public void onError(Throwable t) { emitter.onError(t); }
-                    @Override public void onComplete() { emitter.onComplete(); }
+                    @Override public void onComplete() { emitter.onComplete();}
+                    @Override public void onSubscribe(Disposable d) {emitter.setDisposable(d);} 
                 }))
             );
     }
@@ -186,6 +258,11 @@ public class Observable<T> {
             final AtomicReference<Throwable> errorRef = new AtomicReference<>();
             
             this.subscribe(new Observer<T>() {
+                @Override
+                public void onSubscribe(Disposable d) {
+                    // emitted.setDisposable(d);
+                }
+
                 @Override
                 public void onNext(T item) {
                     queue.offer(item);
@@ -245,48 +322,79 @@ public class Observable<T> {
     // Внутренний класс для безопасной эмиссии событий
     private static class SafeEmitter<T> implements Emitter<T> {
         private final Observer<T> observer;
-        private boolean isCompleted = false;
+        private volatile boolean isDisposed = false;
+        private volatile boolean isCompleted = false;
+        private Disposable currentDisposable;
 
         SafeEmitter(Observer<T> observer) {
             this.observer = observer;
         }
 
         @Override
-        public void onNext(T item) {
-            if (!isCompleted) {
+        public void setDisposable(Disposable d) {
+            this.currentDisposable = d;
+            // Уведомляем подписчика о создании подписки
+            if (!isDisposed && !isCompleted) {
                 try {
-                    observer.onNext(item);
-                } catch (Throwable t) {
-                    onError(t);
+                    observer.onSubscribe(d);
+                } catch (Throwable e) {
+                    onError(e);
                 }
+            }
+        }
+
+        @Override
+        public boolean isDisposed() {
+            return isDisposed;
+        }
+        @Override
+        public void onNext(T item) {
+            if (isDisposed || isCompleted) return;
+            try {
+                observer.onNext(item);
+            } catch (Throwable t) {
+                onError(t);
             }
         }
 
         @Override
         public void onError(Throwable t) {
-            if (!isCompleted) {
-                isCompleted = true;
-                try {
-                    observer.onError(t);
-                } catch (Throwable e) {
-                    // Обработка ошибки в подписчике
-                    e.addSuppressed(t);
-                    e.printStackTrace();
-                }
+            if (isDisposed || isCompleted) return;
+            isCompleted = true;
+            try {
+                observer.onError(t);
+            } catch (Throwable e) {
+                e.addSuppressed(t);
+                Thread.currentThread().getUncaughtExceptionHandler()
+                    .uncaughtException(Thread.currentThread(), e);
+            } finally {
+                disposeResources();
             }
         }
 
         @Override
         public void onComplete() {
-            if (!isCompleted) {
-                isCompleted = true;
-                try {
-                    observer.onComplete();
-                } catch (Throwable t) {
-                    t.printStackTrace();
-                }
+            if (isDisposed || isCompleted) return;
+            isCompleted = true;
+            try {
+                observer.onComplete();
+            } catch (Throwable t) {
+                Thread.currentThread().getUncaughtExceptionHandler()
+                    .uncaughtException(Thread.currentThread(), t);
+            } finally {
+                disposeResources();
             }
         }
+
+
+         private void disposeResources() {
+            isDisposed = true;
+            if (currentDisposable != null) {
+                currentDisposable.dispose();
+            }
+        }
+
+
     }
 
 
@@ -304,5 +412,32 @@ public class Observable<T> {
 //             return disposed;
 //         }
 //     }
+    public static class CompositeDisposable implements Disposable {
+        private final List<Disposable> disposables = new CopyOnWriteArrayList<>();
+        private volatile boolean disposed;
 
+        public void add(Disposable disposable) {
+            if (disposed) {
+                disposable.dispose();
+            } else {
+                disposables.add(disposable);
+            }
+        }
+
+        @Override
+        public void dispose() {
+            if (!disposed) {
+                disposed = true;
+                for (Disposable d : disposables) {
+                    d.dispose();
+                }
+                disposables.clear();
+            }
+        }
+
+        @Override
+        public boolean isDisposed() {
+            return disposed;
+        }
+    }
 }

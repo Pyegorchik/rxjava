@@ -1,16 +1,16 @@
 public class Main {
     public static void main(String[] args) throws InterruptedException {
-        // System.out.println("--- Демонстрация map и filter ---");
-        // demoMapAndFilter();
+        System.out.println("--- Демонстрация map и filter ---");
+        demoMapAndFilter();
 
         System.out.println("\n--- Демонстрация Schedulers (subscribeOn, observeOn) ---");
         demoSchedulers();
         
         // System.out.println("\n--- Демонстрация flatMap ---");
-        // demoFlatMap();
+        demoFlatMap();
         
-        // System.out.println("\n--- Демонстрация обработки ошибок ---");
-        // demoErrorHandling();
+        System.out.println("\n--- Демонстрация обработки ошибок ---");
+        demoErrorHandling();
         
         // Даем время асинхронным операциям завершиться
         Thread.sleep(2000); 
@@ -84,17 +84,17 @@ public class Main {
 // Вспомогательный класс для демонстрации
 class DefaultObserver<T> implements Observer<T> {
     private final String name;
-    // private Disposable disposable;
+    private Disposable disposable;
 
     public DefaultObserver(String name) {
         this.name = name;
     }
 
-    // @Override
-    // public void onSubscribe(Disposable d) {
-    //     this.disposable = d;
-    //     System.out.printf("[%s] onSubscribe в потоке: %s\n", name, Thread.currentThread().getName());
-    // }
+    @Override
+    public void onSubscribe(Disposable d) {
+        this.disposable = d;
+        System.out.printf("[%s] onSubscribe в потоке: %s\n", name, Thread.currentThread().getName());
+    }
 
     @Override
     public void onNext(T t) {
