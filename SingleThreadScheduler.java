@@ -11,4 +11,9 @@ public class SingleThreadScheduler implements Scheduler {
     public void execute(Runnable task) {
         executor.execute(task);
     }
+
+    @Override
+    public void shutdown() {
+        executor.shutdown();
+    }
 }

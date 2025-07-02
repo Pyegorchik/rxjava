@@ -3,8 +3,9 @@
  */
 public interface Scheduler {
     /**
-     * Выполняет задачу.
-     * @param task задача для выполнения
+     * Выполняет задачу.s
      */
     void execute(Runnable task);
+
+    void shutdown();
 }

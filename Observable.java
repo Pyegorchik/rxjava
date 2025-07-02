@@ -1,4 +1,7 @@
 
+import java.util.Queue;
+import java.util.concurrent.ConcurrentLinkedQueue;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicReference;
 
 /**
@@ -23,21 +26,13 @@ public class Observable<T> {
     /**
      * Подписывает Observer на получение данных от Observable.
      */
-    public void subscribe(Observer<T> observer) {
-        // Создаем простой Disposable для примера
-        BasicDisposable disposable = new BasicDisposable();
-        observer.onSubscribe(disposable);
-        
-        if (disposable.isDisposed()) {
-            return;
-        }
-
+    public Disposable subscribe(Observer<T> observer) {
+        AtomicBoolean disposed = new AtomicBoolean(false);
+        SafeEmitter<T> safeEmitter = new SafeEmitter<>(observer);
         try {
-            source.subscribe(observer);
+            source.subscribe(safeEmitter);
         } catch (Throwable t) {
-            if (!disposable.isDisposed()) {
-                observer.onError(t);
-            }
+            safeEmitter.onError(t);
         }
     }
 
@@ -45,30 +40,30 @@ public class Observable<T> {
      * Оператор преобразования данных.
      */
     public <R> Observable<R> map(Function<? super T, ? extends R> mapper) {
-        return create(observer -> subscribe(new Observer<T>() {
-            @Override
-            public void onSubscribe(Disposable d) {
-                observer.onSubscribe(d);
-            }
+        return new Observable<>(emitter -> this.subscribe(new Observer<T>() {
+            // @Override
+            // public void onSubscribe(Disposable d) {
+            //     observer.onSubscribe(d);
+            // }
 
             @Override
             public void onNext(T t) {
                 try {
                     R result = mapper.apply(t);
-                    observer.onNext(result);
+                    emitter.onNext(result);
                 } catch (Exception e) {
-                    observer.onError(e);
+                    emitter.onError(e);
                 }
             }
 
             @Override
             public void onError(Throwable e) {
-                observer.onError(e);
+                emitter.onError(e);
             }
 
             @Override
             public void onComplete() {
-                observer.onComplete();
+                emitter.onComplete();
             }
         }));
     }
@@ -77,143 +72,237 @@ public class Observable<T> {
      * Оператор фильтрации данных.
      */
     public Observable<T> filter(Predicate<? super T> predicate) {
-        return create(observer -> subscribe(new Observer<T>() {
-            @Override
-            public void onSubscribe(Disposable d) {
-                observer.onSubscribe(d);
-            }
+        return new Observable<>(emitter -> subscribe(new Observer<T>() {
+            // @Override
+            // public void onSubscribe(Disposable d) {
+            //     observer.onSubscribe(d);
+            // }
 
             @Override
             public void onNext(T t) {
                 try {
                     if (predicate.test(t)) {
-                        observer.onNext(t);
+                        emitter.onNext(t);
                     }
-                } catch (Exception e) {
-                    observer.onError(e);
+                } catch (Throwable e) {
+                    emitter.onError(e);
                 }
             }
 
             @Override
             public void onError(Throwable e) {
-                observer.onError(e);
+                emitter.onError(e);
             }
 
             @Override
             public void onComplete() {
-                observer.onComplete();
+                emitter.onComplete();
             }
         }));
     }
 
-    /**
-     * Оператор, который преобразует каждый элемент в Observable, а затем "сглаживает"
-     * эти Observable в единый поток.
-     */
-    public <R> Observable<R> flatMap(Function<T, ? extends Observable<R>> mapper) {
-        return create(downstreamObserver -> subscribe(new Observer<T>() {
-            private Disposable upstreamDisposable;
-            private final AtomicReference<Disposable> innerDisposable = new AtomicReference<>();
-            private volatile boolean done;
+    // /**
+    //  * Оператор, который преобразует каждый элемент в Observable, а затем "сглаживает"
+    //  * эти Observable в единый поток.
+    //  */
+    // public <R> Observable<R> flatMap(Function<T, ? extends Observable<R>> mapper) {
+    //     return create(downstreamObserver -> subscribe(new Observer<T>() {
+    //         private Disposable upstreamDisposable;
+    //         private final AtomicReference<Disposable> innerDisposable = new AtomicReference<>();
+    //         private volatile boolean done;
 
-            @Override
-            public void onSubscribe(Disposable d) {
-                this.upstreamDisposable = d;
-                downstreamObserver.onSubscribe(d);
-            }
+    //         @Override
+    //         public void onSubscribe(Disposable d) {
+    //             this.upstreamDisposable = d;
+    //             downstreamObserver.onSubscribe(d);
+    //         }
 
-            @Override
-            public void onNext(T t) {
-                try {
-                    Observable<? extends R> innerObservable = mapper.apply(t);
-                    innerObservable.subscribe(new Observer<R>() {
-                        @Override
-                        public void onSubscribe(Disposable d) {
-                           // Можно управлять внутренними подписками
-                           innerDisposable.set(d);
-                        }
+    //         @Override
+    //         public void onNext(T t) {
+    //             try {
+    //                 Observable<? extends R> innerObservable = mapper.apply(t);
+    //                 innerObservable.subscribe(new Observer<R>() {
+    //                     @Override
+    //                     public void onSubscribe(Disposable d) {
+    //                        // Можно управлять внутренними подписками
+    //                        innerDisposable.set(d);
+    //                     }
 
-                        @Override
-                        public void onNext(R r) {
-                            downstreamObserver.onNext(r);
-                        }
+    //                     @Override
+    //                     public void onNext(R r) {
+    //                         downstreamObserver.onNext(r);
+    //                     }
 
-                        @Override
-                        public void onError(Throwable e) {
-                            downstreamObserver.onError(e);
-                        }
+    //                     @Override
+    //                     public void onError(Throwable e) {
+    //                         downstreamObserver.onError(e);
+    //                     }
 
-                        @Override
-                        public void onComplete() {
-                           // Внутренний поток завершился
-                        }
-                    });
-                } catch (Exception e) {
-                    downstreamObserver.onError(e);
-                }
-            }
+    //                     @Override
+    //                     public void onComplete() {
+    //                        // Внутренний поток завершился
+    //                     }
+    //                 });
+    //             } catch (Exception e) {
+    //                 downstreamObserver.onError(e);
+    //             }
+    //         }
 
-            @Override
-            public void onError(Throwable e) {
-                downstreamObserver.onError(e);
-            }
+    //         @Override
+    //         public void onError(Throwable e) {
+    //             downstreamObserver.onError(e);
+    //         }
 
-            @Override
-            public void onComplete() {
-                done = true;
-                // Завершаем основной поток только когда все внутренние потоки завершены
-                // Для простоты, здесь мы завершаем сразу.
-                downstreamObserver.onComplete();
-            }
-        }));
+    //         @Override
+    //         public void onComplete() {
+    //             done = true;
+    //             // Завершаем основной поток только когда все внутренние потоки завершены
+    //             // Для простоты, здесь мы завершаем сразу.
+    //             downstreamObserver.onComplete();
+    //         }
+    //     }));
+    // }
+
+
+    public Observable<T> subscribeOn(Scheduler scheduler) {
+        return new Observable<>(emitter -> 
+            scheduler.execute(() -> 
+                this.subscribe(new Observer<T>() {
+                    @Override public void onNext(T item) { emitter.onNext(item); }
+                    @Override public void onError(Throwable t) { emitter.onError(t); }
+                    @Override public void onComplete() { emitter.onComplete(); }
+                }))
+            );
     }
 
     /**
      * Указывает Scheduler, в котором будет выполняться подписка (метод create).
      */
-    public Observable<T> subscribeOn(Scheduler scheduler) {
-        return create(observer -> scheduler.execute(() -> this.subscribe(observer)));
-    }
-
-    /**
-     * Указывает Scheduler, в котором будут вызываться методы onNext, onError, onComplete у наблюдателя.
-     */
     public Observable<T> observeOn(Scheduler scheduler) {
-        return create(observer -> subscribe(new Observer<T>() {
-            @Override
-            public void onSubscribe(Disposable d) {
-                observer.onSubscribe(d);
-            }
-
-            @Override
-            public void onNext(T t) {
-                scheduler.execute(() -> observer.onNext(t));
-            }
-
-            @Override
-            public void onError(Throwable e) {
-                scheduler.execute(() -> observer.onError(e));
-            }
-
-            @Override
-            public void onComplete() {
-                scheduler.execute(observer::onComplete);
-            }
-        }));
+        return new Observable<>(emitter -> {
+            final Queue<T> queue = new ConcurrentLinkedQueue<>();
+            final AtomicBoolean isProcessing = new AtomicBoolean(false);
+            final AtomicBoolean completed = new AtomicBoolean(false);
+            final AtomicReference<Throwable> errorRef = new AtomicReference<>();
+            
+            this.subscribe(new Observer<T>() {
+                @Override
+                public void onNext(T item) {
+                    queue.offer(item);
+                    scheduleDrain(scheduler, emitter, queue, isProcessing, completed, errorRef);
+                }
+                
+                @Override
+                public void onError(Throwable t) {
+                    errorRef.set(t);
+                    completed.set(true);
+                    scheduleDrain(scheduler, emitter, queue, isProcessing, completed, errorRef);
+                }
+                
+                @Override
+                public void onComplete() {
+                    completed.set(true);
+                    scheduleDrain(scheduler, emitter, queue, isProcessing, completed, errorRef);
+                }
+            });
+        });
+    }
+    
+    private void scheduleDrain(Scheduler scheduler, 
+                               Emitter<T> emitter, 
+                               Queue<T> queue, 
+                               AtomicBoolean isProcessing, 
+                               AtomicBoolean completed,
+                               AtomicReference<Throwable> errorRef) {
+        if (isProcessing.compareAndSet(false, true)) {
+            scheduler.execute(() -> {
+                try {
+                    // Обрабатываем все элементы в очереди
+                    while (!queue.isEmpty()) {
+                        emitter.onNext(queue.poll());
+                    }
+                    
+                    // Проверяем завершение
+                    if (completed.get()) {
+                        Throwable error = errorRef.get();
+                        if (error != null) {
+                            emitter.onError(error);
+                        } else {
+                            emitter.onComplete();
+                        }
+                    }
+                } finally {
+                    isProcessing.set(false);
+                    // Проверяем, не появились ли новые события
+                    if (!queue.isEmpty() || (completed.get() && !isProcessing.get())) {
+                        scheduleDrain(scheduler, emitter, queue, isProcessing, completed, errorRef);
+                    }
+                }
+            });
+        }
     }
 
-    // Внутренний класс для простого управления подпиской
-    private static class BasicDisposable implements Disposable {
-        private volatile boolean disposed = false;
+    // Внутренний класс для безопасной эмиссии событий
+    private static class SafeEmitter<T> implements Emitter<T> {
+        private final Observer<T> observer;
+        private boolean isCompleted = false;
 
-        @Override
-        public void dispose() {
-            disposed = true;
+        SafeEmitter(Observer<T> observer) {
+            this.observer = observer;
         }
 
         @Override
-        public boolean isDisposed() {
-            return disposed;
+        public void onNext(T item) {
+            if (!isCompleted) {
+                try {
+                    observer.onNext(item);
+                } catch (Throwable t) {
+                    onError(t);
+                }
+            }
+        }
+
+        @Override
+        public void onError(Throwable t) {
+            if (!isCompleted) {
+                isCompleted = true;
+                try {
+                    observer.onError(t);
+                } catch (Throwable e) {
+                    // Обработка ошибки в подписчике
+                    e.addSuppressed(t);
+                    e.printStackTrace();
+                }
+            }
+        }
+
+        @Override
+        public void onComplete() {
+            if (!isCompleted) {
+                isCompleted = true;
+                try {
+                    observer.onComplete();
+                } catch (Throwable t) {
+                    t.printStackTrace();
+                }
+            }
         }
     }
+
+
+    //     // Внутренний класс для простого управления подпиской
+//     private static class BasicDisposable implements Disposable {
+//         private volatile boolean disposed = false;
+
+//         @Override
+//         public void dispose() {
+//             disposed = true;
+//         }
+
+//         @Override
+//         public boolean isDisposed() {
+//             return disposed;
+//         }
+//     }
+
 }
